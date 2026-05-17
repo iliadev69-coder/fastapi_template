@@ -1,0 +1,200 @@
+name: OpenAPI Changelog
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+    branches: [main]
+    paths:
+      - 'app/**'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'Makefile'
+      - '.github/workflows/openapi-changelog.yml'
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: openapi-changelog-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  generate-spec:
+    name: Generate spec (${{ matrix.ref.name }})
+    runs-on: ubuntu-latest
+    if: >-
+      github.actor != 'dependabot[bot]' &&
+      (
+        (github.event.action != 'labeled' && github.event.action != 'unlabeled')
+        || github.event.label.name == 'breaking-changes-approved'
+      )
+    strategy:
+      fail-fast: false
+      matrix:
+        ref:
+          - name: pr
+            value: ${{ github.event.pull_request.head.sha }}
+          - name: base
+            value: ${{ github.event.pull_request.base.sha }}
+    steps:
+      - name: Checkout (${{ matrix.ref.name }})
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ matrix.ref.value }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Generate OpenAPI spec
+        run: |
+          if grep -qE '^generate-spec:' Makefile 2>/dev/null; then
+            make generate-spec
+          else
+            # Bootstrap: base branch predates this workflow. Emit an empty
+            # spec so the diff job treats this PR as the first run.
+            mkdir -p artefacts
+            : > artefacts/spec.yaml
+          fi
+
+      - name: Upload spec artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: openapi-${{ matrix.ref.name }}
+          path: artefacts/spec.yaml
+          retention-days: 7
+          if-no-files-found: error
+
+  diff:
+    name: Diff and report
+    needs: generate-spec
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Download PR spec
+        uses: actions/download-artifact@v8
+        with:
+          name: openapi-pr
+          path: pr
+
+      - name: Download base spec
+        uses: actions/download-artifact@v8
+        with:
+          name: openapi-base
+          path: base
+
+      - name: Install oasdiff
+        env:
+          # 1.15.3 ships kin-openapi v0.137.0, which parses OpenAPI 3.1 numeric
+          # exclusiveMinimum/exclusiveMaximum. 1.13.1 used the oasdiff fork of
+          # kin-openapi that still expected a bool there and crashed parsing
+          # FastAPI-generated 3.1 specs.
+          OASDIFF_VERSION: '1.15.3'
+        run: |
+          TARBALL="oasdiff_${OASDIFF_VERSION}_linux_amd64.tar.gz"
+          curl -sSfL "https://github.com/oasdiff/oasdiff/releases/download/v${OASDIFF_VERSION}/${TARBALL}" -o "${TARBALL}"
+          curl -sSfL "https://github.com/oasdiff/oasdiff/releases/download/v${OASDIFF_VERSION}/checksums.txt" -o checksums.txt
+          grep "${TARBALL}" checksums.txt | sha256sum -c -
+          sudo tar -xzf "${TARBALL}" -C /usr/local/bin oasdiff
+
+      - name: Generate changelog
+        run: |
+          if [ ! -s base/spec.yaml ]; then
+            summary="No base spec available for comparison (first run after enabling changelog CI)."
+          else
+            summary="$(oasdiff changelog base/spec.yaml pr/spec.yaml --format markdown || true)"
+            summary="$(printf '%s\n' "$summary" | sed '/^# API Changelog/d' | sed 's/^## /### /' | sed '/./,$!d')"
+            if [ -z "$summary" ]; then
+              summary="No API changes detected."
+            fi
+          fi
+          printf '%s\n' "$summary" > /tmp/api-changelog-summary.md
+          {
+            echo '## OpenAPI Changelog'
+            echo
+            printf '%s\n' "$summary"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Detect breaking changes
+        id: breaking
+        continue-on-error: true
+        run: |
+          if [ ! -s base/spec.yaml ]; then
+            echo "Skipping breaking-change detection: no base spec available."
+            exit 0
+          fi
+          oasdiff breaking base/spec.yaml pr/spec.yaml --fail-on ERR
+
+      - name: Sync breaking-changes label
+        uses: actions/github-script@v9
+        env:
+          BREAKING: ${{ steps.breaking.outcome }}
+        with:
+          script: |
+            const breaking = process.env.BREAKING === 'failure';
+            const params = {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            };
+            if (breaking) {
+              await github.rest.issues.addLabels({ ...params, labels: ['breaking-changes'] });
+            } else {
+              try {
+                await github.rest.issues.removeLabel({ ...params, name: 'breaking-changes' });
+              } catch (e) {
+                if (e.status !== 404) throw e;
+              }
+            }
+
+      - name: Upsert API changelog comment
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          MARKER='<!-- api_changelog_comment -->'
+
+          {
+            echo "$MARKER"
+            echo
+            echo '## OpenAPI Changelog'
+            echo
+            cat /tmp/api-changelog-summary.md
+          } > /tmp/api-changelog-comment.md
+
+          jq -Rs '{body: .}' < /tmp/api-changelog-comment.md > /tmp/api-changelog-payload.json
+
+          comment_id="$(
+            gh api --paginate "repos/${REPO}/issues/${PR_NUMBER}/comments" \
+              --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | contains(\"${MARKER}\"))) | .id" \
+              | tail -n 1
+          )"
+
+          if [ -n "$comment_id" ]; then
+            gh api --method PATCH "repos/${REPO}/issues/comments/${comment_id}" \
+              --input /tmp/api-changelog-payload.json >/dev/null
+          else
+            gh api --method POST "repos/${REPO}/issues/${PR_NUMBER}/comments" \
+              --input /tmp/api-changelog-payload.json >/dev/null
+          fi
+
+      - name: Fail on unapproved breaking changes
+        if: >-
+          steps.breaking.outcome == 'failure' &&
+          !contains(github.event.pull_request.labels.*.name, 'breaking-changes-approved')
+        run: |
+          echo "::error::Breaking OpenAPI changes detected. Apply the 'breaking-changes-approved' label to bypass."
+          exit 1

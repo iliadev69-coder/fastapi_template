@@ -63,3 +63,14 @@ migrate:
 .PHONY: revision
 revision:
 	uv run alembic revision --autogenerate -m "$(m)"
+
+
+.PHONY: artefacts
+artefacts:
+	mkdir -p artefacts
+
+
+.PHONY: generate-spec
+generate-spec: artefacts
+	uv run python -c "import yaml; from app.asgi import app; \
+		open('artefacts/spec.yaml', 'w').write(yaml.safe_dump(app.openapi(), sort_keys=False))"
