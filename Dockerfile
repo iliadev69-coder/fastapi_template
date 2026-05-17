@@ -1,4 +1,4 @@
-FROM python:3.13-slim AS base
+FROM python:3.14-slim AS base
 
 LABEL description="FastAPI Template"
 LABEL version="0.1.0"
