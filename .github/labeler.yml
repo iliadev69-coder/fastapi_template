@@ -1,0 +1,21 @@
+migrations:
+- changed-files:
+  - any-glob-to-any-file: 'alembic/versions/**'
+
+env:
+- changed-files:
+  - any-glob-to-any-file: '.env_example'
+
+pyproject:
+- changed-files:
+  - any-glob-to-any-file: 'pyproject.toml'
+
+app:
+- changed-files:
+  - any-glob-to-any-file: 'app/**'
+
+not-tested:
+- all:
+  - changed-files:
+    - any-glob-to-any-file: 'app/**'
+    - all-globs-to-all-files: '!tests/**'

@@ -1,0 +1,7 @@
+ALREADY_EXISTS = 'Entity already exists.'
+EXCLUSIVE_PRESENCE = 'Exactly one of arguments must be provided, but not both.'
+RELATED_OBJECT_NOT_FOUND = 'Related object not found.'
+INCORRECT_USERNAME_OR_PASSWORD = 'Incorrect user name or password.'
+INVALID_TOKEN = 'Invalid token.'
+NO_AUTH_CREDENTIALS = 'No auth credentials.'
+TOKEN_CONTENT_VALIDATION_ERROR = 'Token content validation error.'

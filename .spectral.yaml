@@ -1,0 +1,32 @@
+extends: "spectral:oas"
+rules:
+  path-keys-no-trailing-slash: false
+  path-params: false
+  path-keys-force-trailing-slash:
+    message: Path must end with slash.
+    recommended: true
+    type: style
+    given: $.paths
+    then:
+      field: "@key"
+      function: pattern
+      functionOptions:
+        match: ".*\\/$"
+  ensure-paths-kebab-case:
+    description: Paths must be in kebab-case.
+    message: '{{description}} (lower case and separated with hyphens)'
+    formats: [oas3]
+    type: style
+    severity: error
+    given: $.paths[*]~
+    then:
+      function: pattern
+      functionOptions:
+        match: "^(\/|[a-z0-9-.]+|{[a-zA-Z0-9_]+})+$"
+  deprecated-paths-require-x-sunset:
+    given: "$..paths.*[?(@.deprecated && @.deprecated === true)]"
+    message: Deprecated paths must have an 'x-sunset' attribute indicating when they will be removed.
+    recommended: true
+    then:
+      field: "x-sunset"
+      function: truthy

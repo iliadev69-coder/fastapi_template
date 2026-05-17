@@ -1,0 +1,48 @@
+services:
+  tests:
+    build:
+      context: .
+      target: dev
+    environment:
+      DB_DSN: postgresql+asyncpg://test:test@tests_db/test
+      REDIS_DSN: redis://tests_redis
+      TEST_PATH: ${TEST_PATH}
+    volumes:
+      - .:/src
+    command: >
+      bash -c "alembic upgrade head &&
+               pytest --no-header --no-cov --color=yes -vv -s $${TEST_PATH}"
+    networks:
+      - tests
+    depends_on:
+      tests_db:
+        condition: service_healthy
+      tests_redis:
+        condition: service_healthy
+
+  tests_db:
+    hostname: postgres
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: test
+      POSTGRES_PASSWORD: test
+      POSTGRES_DB: test
+    command: "postgres -c max_connections=20 -c shared_buffers=200MB"
+    networks:
+      - tests
+    healthcheck:
+      test: "pg_isready -U test -d test"
+      interval: 5s
+      timeout: 2s
+      retries: 5
+
+  tests_redis:
+    image: redis:latest
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    networks:
+      - tests
+    healthcheck:
+      test: [ "CMD", "redis-cli", "--raw", "incr", "ping" ]
+
+networks:
+  tests:

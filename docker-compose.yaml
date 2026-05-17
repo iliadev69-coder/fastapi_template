@@ -1,0 +1,84 @@
+services:
+  migrator:
+    build:
+      context: .
+      target: app
+    volumes:
+      - .:/src
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: alembic upgrade head
+    networks:
+      - dev
+
+  app:
+    build:
+      context: .
+      target: app
+    ports:
+      - 8000:8000
+    volumes:
+      - .:/src
+    networks:
+      - dev
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: .
+      target: app
+    command:
+      - saq
+      - app.worker.settings
+      - --verbose
+    volumes:
+      - .:/src
+    networks:
+      - dev
+    env_file:
+      - .env
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+
+  redis:
+    image: redis:latest
+    volumes:
+      - cache-data:/data
+    networks:
+      - dev
+    healthcheck:
+      test: [ "CMD", "redis-cli", "--raw", "incr", "ping" ]
+
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: database
+    command: "postgres -c max_connections=20 -c shared_buffers=200MB"
+    ports:
+      - 5430:5432
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - dev
+    healthcheck:
+      test: "pg_isready -U user -d database"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres-data:
+  cache-data:
+
+networks:
+  dev:
