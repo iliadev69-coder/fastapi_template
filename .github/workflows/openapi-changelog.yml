@@ -39,7 +39,7 @@ jobs:
             value: ${{ github.event.pull_request.base.sha }}
     steps:
       - name: Checkout (${{ matrix.ref.name }})
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: ${{ matrix.ref.value }}
 
